@@ -1,5 +1,5 @@
 #!/bin/bash
-# monitor-system-install.sh - Script para instalar sistema de monitoreo minimalista
+# install-monitor-system.sh - Script para instalar sistema de monitoreo minimalista
 
 # Verificar ejecución como root
 if [ "$(id -u)" != "0" ]; then
@@ -13,10 +13,12 @@ KIOSK_PASSWORD="monitor123"  # Cambia esto por seguridad
 NODE_RED_PORT=1880
 DASHBOARD_URL="http://localhost:$NODE_RED_PORT/dashboard"
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
+NODERED_REPO="https://github.com/asproit/produccionMinimo.git"
 
 # Configurar colores para mensajes
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}===========================================================${NC}"
@@ -39,12 +41,27 @@ if ! id "$KIOSK_USER" &>/dev/null; then
     echo "$KIOSK_USER ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot" >> /etc/sudoers.d/kiosk
     chmod 0440 /etc/sudoers.d/kiosk
 fi
+# Añadir al grupo video para X server
+usermod -aG video $KIOSK_USER
 
 # Paso 3: Instalar Node.js usando NVM (más flexible para actualizaciones)
 echo -e "${GREEN}[3/8] Instalando Node.js vía NVM...${NC}"
 su - $KIOSK_USER -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash"
+# Configurar .bashrc para cargar NVM automáticamente
+cat >> /home/$KIOSK_USER/.bashrc << EOF
+
+# NVM Configuration
+export NVM_DIR="\$HOME/.nvm"
+[ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
+[ -s "\$NVM_DIR/bash_completion" ] && \. "\$NVM_DIR/bash_completion"
+EOF
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.bashrc
+
 # Cargar NVM y instalar Node.js LTS
-su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && nvm install --lts && nvm use --lts"
+su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && nvm install --lts && nvm use --lts && nvm alias default node"
+NODE_PATH=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && which node")
+NODE_VERSION=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && node -v")
+echo -e "${BLUE}Node.js instalado: $NODE_PATH (versión $NODE_VERSION)${NC}"
 
 # Paso 4: Instalar Node-RED y configurar como servicio
 echo -e "${GREEN}[4/8] Instalando Node-RED...${NC}"
@@ -67,6 +84,7 @@ EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
 
 # Crear servicio systemd para Node-RED
+NODE_RED_PATH=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && which node-red")
 cat > /etc/systemd/system/nodered.service << EOF
 [Unit]
 Description=Node-RED
@@ -78,28 +96,64 @@ User=$KIOSK_USER
 WorkingDirectory=/home/$KIOSK_USER
 Environment="PATH=/home/$KIOSK_USER/.nvm/versions/node/\$(ls -t /home/$KIOSK_USER/.nvm/versions/node/ | head -n 1)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="NODE_PATH=/home/$KIOSK_USER/.nvm/versions/node/\$(ls -t /home/$KIOSK_USER/.nvm/versions/node/ | head -n 1)/lib/node_modules"
-ExecStart=/home/$KIOSK_USER/.nvm/versions/node/\$(ls -t /home/$KIOSK_USER/.nvm/versions/node/ | head -n 1)/bin/node-red
+ExecStart=$NODE_PATH $NODE_RED_PATH
 Restart=on-failure
+RestartSec=10
 KillSignal=SIGINT
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Paso 5: Instalar Tailscale
-echo -e "${GREEN}[5/8] Instalando Tailscale...${NC}"
+# Paso 5: Clonar e instalar el proyecto de Node-RED
+echo -e "${GREEN}[5/8] Configurando proyecto Node-RED...${NC}"
+# Iniciar temporalmente Node-RED para crear la estructura de directorio
+systemctl start nodered.service
+sleep 10  # Dar tiempo a Node-RED para inicializar
+systemctl stop nodered.service
+sleep 5
+
+# Configurar git para el usuario kiosk
+su - $KIOSK_USER -c "git config --global user.name 'Kiosk System'"
+su - $KIOSK_USER -c "git config --global user.email 'kiosk@example.com'"
+su - $KIOSK_USER -c "git config --global init.defaultBranch main"
+
+# Clonar repositorio
+mkdir -p /home/$KIOSK_USER/.node-red/projects
+su - $KIOSK_USER -c "cd ~/.node-red/projects && git clone $NODERED_REPO produccionMinimo"
+
+# Configurar como proyecto predeterminado
+mkdir -p /home/$KIOSK_USER/.node-red/projects/.config
+cat > /home/$KIOSK_USER/.node-red/projects/.config/project-registry.json << EOF
+{
+    "projects": {
+        "produccionMinimo": {
+            "credentialSecret": false,
+            "default": true
+        }
+    }
+}
+EOF
+
+# Instalar dependencias del proyecto
+echo -e "${GREEN}Instalando dependencias del proyecto...${NC}"
+su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && cd ~/.node-red && npm install @flowfuse/node-red-dashboard@1.16.0 node-red-contrib-influxdb@0.7.0 node-red-contrib-modbus@5.31.0 node-red-contrib-stackhero-influxdb-v2@1.0.4 node-red-dashboard@3.6.5 node-red-node-serialport@2.0.2"
+chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
+
+# Paso 6: Instalar Tailscale
+echo -e "${GREEN}[6/8] Instalando Tailscale...${NC}"
 curl -fsSL https://tailscale.com/install.sh | sh
 
 # Configurar Tailscale para permitir tráfico al puerto 1880
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
-    tailscale up --authkey=$TAILSCALE_AUTHKEY --advertise-routes=localhost/$NODE_RED_PORT
+    tailscale up --authkey=$TAILSCALE_AUTHKEY --advertise-routes=localhost/$NODE_RED_PORT --shields-up
 else
     echo "Tailscale instalado. Ejecuta 'tailscale up' manualmente para autenticarte"
-    echo "Para permitir acceso al puerto de Node-RED: tailscale up --advertise-exit-node --advertise-routes=localhost/$NODE_RED_PORT"
+    echo "Para permitir acceso al puerto de Node-RED: tailscale up --authkey=TU-CLAVE-AQUÍ --advertise-routes=localhost/$NODE_RED_PORT --shields-up"
 fi
 
-# Paso 6: Instalar entorno para kiosko (X, openbox, chromium)
-echo -e "${GREEN}[6/8] Instalando entorno para kiosko...${NC}"
+# Paso 7: Instalar entorno para kiosko (X, openbox, chromium)
+echo -e "${GREEN}[7/8] Instalando entorno para kiosko...${NC}"
 apt install -y xorg openbox lightdm chromium x11-xserver-utils unclutter
 
 # Configurar LightDM para autologin
@@ -129,8 +183,7 @@ chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --di
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
-# Paso 7: Configurar servicio de kiosko
-echo -e "${GREEN}[7/8] Configurando servicio de kiosko...${NC}"
+# Configurar servicio de kiosko
 cat > /etc/systemd/system/kiosk.service << EOF
 [Unit]
 Description=Kiosk Mode Service
@@ -141,20 +194,13 @@ Wants=graphical.target
 Type=simple
 User=$KIOSK_USER
 Environment=DISPLAY=:0
-ExecStart=/usr/bin/startx
+ExecStart=/bin/sh -c "startx -- -nocursor"
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# Paso 8: Activar servicios y últimos ajustes
-echo -e "${GREEN}[8/8] Activando servicios...${NC}"
-systemctl daemon-reload
-systemctl enable nodered.service
-systemctl enable kiosk.service
-systemctl start nodered.service
 
 # Configuración para evitar salida del modo kiosko
 mkdir -p /etc/X11/xorg.conf.d
@@ -164,11 +210,19 @@ Section "ServerFlags"
 EndSection
 EOF
 
+# Paso 8: Activar servicios y últimos ajustes
+echo -e "${GREEN}[8/8] Activando servicios...${NC}"
+systemctl daemon-reload
+systemctl enable nodered.service
+systemctl enable kiosk.service
+systemctl start nodered.service
+
 echo -e "${BLUE}===========================================================${NC}"
 echo -e "${GREEN}¡INSTALACIÓN COMPLETADA!${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
-echo "Node-RED con projects activado: http://localhost:$NODE_RED_PORT"
+echo "Node-RED con proyecto 'produccionMinimo' y dependencias instaladas: http://localhost:$NODE_RED_PORT"
+echo "Dashboard: $DASHBOARD_URL"
 echo "Tailscale instalado para acceso remoto"
 echo "Kiosko configurado para arranque automático"
 echo ""
