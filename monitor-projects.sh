@@ -11,7 +11,7 @@ fi
 KIOSK_USER="kiosk"
 KIOSK_PASSWORD="monitor123"  # Cambia esto por seguridad
 NODE_RED_PORT=1880
-INITIAL_URL="http://localhost:$NODE_RED_PORT"
+INITIAL_URL="http://localhost:$NODE_RED_PORT"/dashboard/
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
 
 # Configurar colores para mensajes
