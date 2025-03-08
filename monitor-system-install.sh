@@ -13,6 +13,12 @@ KIOSK_PASSWORD="aspro1457"  # Tu contraseña normal
 NODE_RED_PORT=1880
 INITIAL_URL="http://localhost:$NODE_RED_PORT"
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
+# Variables para IP estática - MODIFICA ESTAS VARIABLES SEGÚN TU RED
+STATIC_IP="192.168.1.136"
+NETMASK="255.255.255.0"
+GATEWAY="192.168.1.1"
+DNS1="8.8.8.8"
+DNS2="8.8.4.4"
 
 # Configurar colores para mensajes
 GREEN='\033[0;32m'
@@ -26,12 +32,12 @@ echo -e "${BLUE}===========================================================${NC}
 echo ""
 
 # Paso 1: Actualizar sistema e instalar dependencias básicas
-echo -e "${GREEN}[1/6] Actualizando sistema e instalando dependencias básicas...${NC}"
+echo -e "${GREEN}[1/7] Actualizando sistema e instalando dependencias básicas...${NC}"
 apt update && apt upgrade -y
-apt install -y git curl wget nano sudo openssh-server htop net-tools jq
+apt install -y git curl wget nano sudo openssh-server htop net-tools jq ufw
 
 # Paso 2: Configurar usuario para el kiosko
-echo -e "${GREEN}[2/6] Configurando usuario para el kiosko...${NC}"
+echo -e "${GREEN}[2/7] Configurando usuario para el kiosko...${NC}"
 # Ya que usaremos tu usuario existente, solo nos aseguramos de que esté en el grupo sudo y video
 usermod -aG sudo $KIOSK_USER
 usermod -aG video $KIOSK_USER
@@ -40,7 +46,7 @@ echo "$KIOSK_USER ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot" >> /etc/sudo
 chmod 0440 /etc/sudoers.d/$KIOSK_USER
 
 # Paso 3: Instalar Node.js usando NVM
-echo -e "${GREEN}[3/6] Instalando Node.js vía NVM...${NC}"
+echo -e "${GREEN}[3/7] Instalando Node.js vía NVM...${NC}"
 su - $KIOSK_USER -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash"
 # Configurar .bashrc para cargar NVM automáticamente
 cat >> /home/$KIOSK_USER/.bashrc << EOF
@@ -64,7 +70,7 @@ NODE_VERSION_CLEAN=${NODE_VERSION#v}
 echo -e "${BLUE}Versión de Node.js instalada: $NODE_VERSION${NC}"
 
 # Paso 4: Instalar Node-RED
-echo -e "${GREEN}[4/6] Instalando Node-RED...${NC}"
+echo -e "${GREEN}[4/7] Instalando Node-RED...${NC}"
 # Limpiar cualquier instalación anterior
 rm -rf /root/.node-red
 mkdir -p /home/$KIOSK_USER/.node-red
@@ -74,11 +80,14 @@ chmod -R 755 /home/$KIOSK_USER/.node-red
 # Instalar Node-RED globalmente
 su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && npm install -g --unsafe-perm node-red"
 
-# Configurar settings.js básico
+# Configurar settings.js para permitir conexiones externas
 cat > /home/$KIOSK_USER/.node-red/settings.js << EOF
 module.exports = {
     // Puerto de Node-RED
     uiPort: $NODE_RED_PORT,
+    
+    // Permitir conexiones desde cualquier IP
+    uiHost: "0.0.0.0",
     
     // Archivos de flujo
     flowFile: 'flows.json',
@@ -115,8 +124,34 @@ KillSignal=SIGINT
 WantedBy=multi-user.target
 EOF
 
-# Paso 5: Instalar entorno para kiosko y Tailscale
-echo -e "${GREEN}[5/6] Instalando Tailscale y entorno de kiosko...${NC}"
+# Paso 5: Configurar conectividad y entorno
+echo -e "${GREEN}[5/7] Configurando conectividad y entorno de red...${NC}"
+
+# Configurar IP estática
+echo -e "${GREEN}Configurando IP estática $STATIC_IP...${NC}"
+# Detectar el nombre de la interfaz de red principal
+INTERFACE=$(ip -o link show | awk -F': ' '$2 ~ /^(eth|en|wl)/ {print $2; exit}')
+echo "Interfaz de red detectada: $INTERFACE"
+
+# Configurar IP estática usando el nombre de interfaz detectado
+cat > /etc/network/interfaces.d/${INTERFACE} << EOF
+auto $INTERFACE
+iface $INTERFACE inet static
+    address $STATIC_IP
+    netmask $NETMASK
+    gateway $GATEWAY
+    dns-nameservers $DNS1 $DNS2
+EOF
+
+# Configurar firewall para permitir las conexiones necesarias
+echo -e "${GREEN}Configurando firewall...${NC}"
+ufw allow 502/tcp  # Puerto Modbus TCP
+ufw allow 1880/tcp # Puerto Node-RED
+ufw allow ssh      # Mantener acceso SSH
+ufw default allow outgoing  # Permitir todas las conexiones salientes
+ufw default deny incoming   # Bloquear conexiones entrantes por defecto
+echo "y" | ufw enable       # Activar firewall con confirmación automática
+
 # Instalar Tailscale
 curl -fsSL https://tailscale.com/install.sh | sh
 
@@ -158,6 +193,101 @@ chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --di
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
+# Configurar atajo de teclado en OpenBox para cambiar entre vistas
+cat > /home/$KIOSK_USER/.config/openbox/rc.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <resistance>
+    <strength>10</strength>
+    <screen_edge_strength>20</screen_edge_strength>
+  </resistance>
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+    <focusLast>yes</focusLast>
+    <underMouse>no</underMouse>
+    <focusDelay>200</focusDelay>
+    <raiseOnFocus>no</raiseOnFocus>
+  </focus>
+  <placement>
+    <policy>Smart</policy>
+    <center>yes</center>
+    <monitor>Primary</monitor>
+    <primaryMonitor>1</primaryMonitor>
+  </placement>
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout>NLIMC</titleLayout>
+    <keepBorder>yes</keepBorder>
+    <animateIconify>yes</animateIconify>
+  </theme>
+  <desktops>
+    <number>1</number>
+    <firstdesk>1</firstdesk>
+    <names>
+      <name>Desktop 1</name>
+    </names>
+    <popupTime>875</popupTime>
+  </desktops>
+  <resize>
+    <drawContents>yes</drawContents>
+    <popupShow>Nonpixel</popupShow>
+    <popupPosition>Center</popupPosition>
+    <popupFixedPosition>
+      <x>10</x>
+      <y>10</y>
+    </popupFixedPosition>
+  </resize>
+  <margins>
+    <top>0</top>
+    <bottom>0</bottom>
+    <left>0</left>
+    <right>0</right>
+  </margins>
+  <keyboard>
+    <!-- Atajo para cambiar entre vistas (Ctrl+Alt+D) -->
+    <keybind key="C-A-d">
+      <action name="Execute">
+        <command>sudo /home/$KIOSK_USER/toggle-view.sh</command>
+      </action>
+    </keybind>
+    
+    <!-- Atajo para cerrar la ventana activa (Alt+F4) -->
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+  </keyboard>
+  <mouse>
+    <dragThreshold>1</dragThreshold>
+    <doubleClickTime>500</doubleClickTime>
+    <screenEdgeWarpTime>400</screenEdgeWarpTime>
+    <screenEdgeWarpMouse>false</screenEdgeWarpMouse>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Drag">
+        <action name="Move"/>
+      </mousebind>
+      <mousebind button="A-Right" action="Drag">
+        <action name="Resize"/>
+      </mousebind>
+    </context>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="Click">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="DoubleClick">
+        <action name="ToggleMaximizeFull"/>
+      </mousebind>
+    </context>
+  </mouse>
+</openbox_config>
+EOF
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config/openbox/rc.xml
+
 # Configurar servicio de kiosko
 cat > /etc/systemd/system/kiosk.service << EOF
 [Unit]
@@ -186,8 +316,10 @@ Section "ServerFlags"
 EndSection
 EOF
 
-# Paso 6: Crear script para la configuración del proyecto
-echo -e "${GREEN}[6/6] Creando script para configuración del proyecto...${NC}"
+# Paso 6: Crear scripts de utilidades
+echo -e "${GREEN}[6/7] Creando scripts de utilidades...${NC}"
+
+# Script para configurar el proyecto
 cat > /home/$KIOSK_USER/setup-project.sh << EOF
 #!/bin/bash
 # setup-project.sh - Script para configurar el proyecto en Node-RED
@@ -233,7 +365,7 @@ npm install --unsafe-perm
 echo -e "\${GREEN}5. Dependencias del proyecto instaladas\${NC}"
 
 # Instalar módulos de dashboard específicos
-npm install --unsafe-perm @flowfuse/node-red-dashboard node-red-dashboard node-red-contrib-influxdb node-red-contrib-modbus
+npm install --unsafe-perm @flowfuse/node-red-dashboard node-red-dashboard node-red-contrib-influxdb node-red-contrib-modbus node-red-contrib-stackhero-influxdb-v2 node-red-node-serialport
 echo -e "\${GREEN}6. Módulos adicionales instalados\${NC}"
 
 # Reiniciar Node-RED
@@ -245,13 +377,14 @@ echo -e "\${GREEN}¡CONFIGURACIÓN DEL PROYECTO COMPLETADA!\${NC}"
 echo -e "\${BLUE}==========================================================\${NC}"
 echo ""
 echo "Node-RED está disponible en: http://localhost:1880"
+echo "Desde otras máquinas en la red: http://$STATIC_IP:1880"
 echo "Si el proyecto se cargó correctamente, los flujos deberían estar disponibles."
 echo ""
 EOF
 chmod +x /home/$KIOSK_USER/setup-project.sh
 chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/setup-project.sh
 
-# Crear script para cambiar entre vistas
+# Script para cambiar entre vistas
 cat > /home/$KIOSK_USER/toggle-view.sh << EOF
 #!/bin/bash
 
@@ -284,21 +417,65 @@ chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/toggle-view.sh
 # Configurar sudo para el script toggle-view.sh
 echo "$KIOSK_USER ALL=(ALL) NOPASSWD: /home/$KIOSK_USER/toggle-view.sh" | sudo tee -a /etc/sudoers.d/$KIOSK_USER
 
-# Activar servicios
+# Crear script para verificar conectividad Modbus
+cat > /home/$KIOSK_USER/check-modbus.sh << EOF
+#!/bin/bash
+# check-modbus.sh - Verificar conectividad Modbus
+
+if [ -z "\$1" ]; then
+  echo "Uso: \$0 <ip_address>"
+  echo "Ejemplo: \$0 192.168.1.209"
+  exit 1
+fi
+
+IP=\$1
+PORT=502
+
+echo "Verificando conectividad Modbus TCP a \$IP:\$PORT..."
+echo "Prueba de ping:"
+ping -c 4 \$IP
+
+echo ""
+echo "Prueba de conexión al puerto Modbus:"
+nc -zv \$IP \$PORT
+
+echo ""
+echo "Estado del firewall:"
+sudo ufw status | grep 502
+
+echo ""
+echo "Si las pruebas fallan, intenta:"
+echo "1. Verificar que el dispositivo Modbus esté encendido y conectado a la red"
+echo "2. Comprobar que el firewall permite las conexiones (sudo ufw allow 502/tcp)"
+echo "3. Asegurarse de que la dirección IP es correcta"
+EOF
+chmod +x /home/$KIOSK_USER/check-modbus.sh
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/check-modbus.sh
+
+# Paso 7: Activar servicios
+echo -e "${GREEN}[7/7] Activando servicios...${NC}"
 systemctl daemon-reload
 systemctl enable nodered.service
 systemctl enable kiosk.service
+systemctl enable networking
 
 echo -e "${BLUE}===========================================================${NC}"
 echo -e "${GREEN}¡INSTALACIÓN DEL SISTEMA BASE COMPLETADA!${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
-echo "Se ha creado el script setup-project.sh para configurar el proyecto Node-RED"
-echo "Ejecuta el siguiente comando para configurar el proyecto:"
-echo "sudo -u $KIOSK_USER /home/$KIOSK_USER/setup-project.sh"
+echo "Configuración de red:"
+echo "- IP estática: $STATIC_IP"
+echo "- Puerto Node-RED: $NODE_RED_PORT"
 echo ""
-echo "También se ha creado el script toggle-view.sh para cambiar entre vistas"
-echo "Ejecútalo con: sudo /home/$KIOSK_USER/toggle-view.sh"
+echo "Scripts disponibles:"
+echo "- setup-project.sh: Configura el proyecto Node-RED"
+echo "- toggle-view.sh: Cambia entre vistas (editor/dashboard)"
+echo "- check-modbus.sh: Verifica la conectividad con dispositivos Modbus"
+echo ""
+echo "Acceso:"
+echo "- Local: http://localhost:1880"
+echo "- Red: http://$STATIC_IP:1880"
+echo "- Atajo para cambiar vistas: Ctrl+Alt+D"
 echo ""
 echo "Usuario: $KIOSK_USER"
 echo ""
