@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-system.sh - Script para instalar sistema base de monitoreo
+# install-complete.sh - Instalación completa del sistema de monitoreo desde cero
 
 # Verificar ejecución como root
 if [ "$(id -u)" != "0" ]; then
@@ -14,7 +14,7 @@ NODE_RED_PORT=1880
 INITIAL_URL="http://localhost:$NODE_RED_PORT"
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
 # Variables para IP estática - MODIFICA ESTAS VARIABLES SEGÚN TU RED
-STATIC_IP="192.168.1.136"
+STATIC_IP="192.168.1.100"
 NETMASK="255.255.255.0"
 GATEWAY="192.168.1.1"
 DNS1="8.8.8.8"
@@ -27,26 +27,47 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}===========================================================${NC}"
-echo -e "${BLUE}  INSTALACIÓN DEL SISTEMA BASE DE MONITOREO${NC}"
+echo -e "${BLUE}  INSTALACIÓN COMPLETA DEL SISTEMA DE MONITOREO${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
 
-# Paso 1: Actualizar sistema e instalar dependencias básicas
-echo -e "${GREEN}[1/7] Actualizando sistema e instalando dependencias básicas...${NC}"
-apt update && apt upgrade -y
-apt install -y git curl wget nano sudo openssh-server htop net-tools jq ufw
+# Paso 1: Limpiar cualquier instalación anterior
+echo -e "${GREEN}[1/7] Limpiando instalaciones anteriores...${NC}"
 
-# Paso 2: Configurar usuario para el kiosko
-echo -e "${GREEN}[2/7] Configurando usuario para el kiosko...${NC}"
+# Detener servicios si existen
+systemctl stop nodered.service 2>/dev/null
+systemctl stop kiosk.service 2>/dev/null
+systemctl disable nodered.service 2>/dev/null
+systemctl disable kiosk.service 2>/dev/null
+
+# Eliminar archivos de servicios
+rm -f /etc/systemd/system/nodered.service
+rm -f /etc/systemd/system/kiosk.service
+systemctl daemon-reload
+
+# Limpiar archivos de configuración
+rm -rf /root/.node-red
+rm -rf /home/$KIOSK_USER/.node-red
+rm -rf /home/$KIOSK_USER/.npm/_npx
+rm -f /etc/lightdm/lightdm.conf
+rm -rf /etc/X11/xorg.conf.d/99-kiosk.conf
+
+# Paso 2: Actualizar sistema e instalar dependencias básicas
+echo -e "${GREEN}[2/7] Actualizando sistema e instalando dependencias básicas...${NC}"
+apt update && apt upgrade -y
+apt install -y git curl wget nano sudo openssh-server htop net-tools jq ufw xterm
+
+# Paso 3: Configurar usuario y entorno
+echo -e "${GREEN}[3/7] Configurando usuario para el kiosko...${NC}"
 # Ya que usaremos tu usuario existente, solo nos aseguramos de que esté en el grupo sudo y video
 usermod -aG sudo $KIOSK_USER
 usermod -aG video $KIOSK_USER
 # Configurar para no pedir contraseña con sudo para ciertos comandos
-echo "$KIOSK_USER ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot" >> /etc/sudoers.d/$KIOSK_USER
+echo "$KIOSK_USER ALL=(ALL) NOPASSWD: /sbin/shutdown, /sbin/reboot" > /etc/sudoers.d/$KIOSK_USER
 chmod 0440 /etc/sudoers.d/$KIOSK_USER
 
-# Paso 3: Instalar Node.js usando NVM
-echo -e "${GREEN}[3/7] Instalando Node.js vía NVM...${NC}"
+# Paso 4: Instalar Node.js usando NVM
+echo -e "${GREEN}[4/7] Instalando Node.js vía NVM...${NC}"
 su - $KIOSK_USER -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash"
 # Configurar .bashrc para cargar NVM automáticamente
 cat >> /home/$KIOSK_USER/.bashrc << EOF
@@ -69,10 +90,10 @@ NODE_VERSION=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && node -v")
 NODE_VERSION_CLEAN=${NODE_VERSION#v}
 echo -e "${BLUE}Versión de Node.js instalada: $NODE_VERSION${NC}"
 
-# Paso 4: Instalar Node-RED
-echo -e "${GREEN}[4/7] Instalando Node-RED...${NC}"
-# Limpiar cualquier instalación anterior
-rm -rf /root/.node-red
+# Paso 5: Instalar Node-RED y configurar proyecto
+echo -e "${GREEN}[5/7] Instalando Node-RED y configurando proyecto...${NC}"
+
+# Crear carpeta .node-red limpia
 mkdir -p /home/$KIOSK_USER/.node-red
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
 chmod -R 755 /home/$KIOSK_USER/.node-red
@@ -98,7 +119,55 @@ module.exports = {
     userDir: '/home/$KIOSK_USER/.node-red'
 }
 EOF
-chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red/settings.js
+
+# Configurar proyecto manualmente con package.json inicial
+cat > /home/$KIOSK_USER/.node-red/package.json << EOF
+{
+    "name": "produccionMinimo",
+    "description": "flujo optimizado para utilizarse de forma local de forma ligera para parametros criticos",
+    "version": "0.0.1",
+    "dependencies": {
+        "@flowfuse/node-red-dashboard": "1.16.0",
+        "node-red-contrib-influxdb": "0.7.0",
+        "node-red-contrib-modbus": "5.31.0",
+        "node-red-contrib-stackhero-influxdb-v2": "1.0.4",
+        "node-red-dashboard": "3.6.5",
+        "node-red-node-serialport": "2.0.2"
+    },
+    "node-red": {
+        "settings": {
+            "flowFile": "flows.json",
+            "credentialsFile": "flows_cred.json"
+        }
+    }
+}
+EOF
+
+# En lugar de clonar directamente, descargamos el repositorio como zip
+echo -e "${GREEN}Descargando repositorio del proyecto...${NC}"
+cd /tmp
+rm -f produccionMinimo.zip
+wget -O produccionMinimo.zip https://github.com/asproit/produccionMinimo/archive/refs/heads/main.zip || curl -L -o produccionMinimo.zip https://github.com/asproit/produccionMinimo/archive/refs/heads/main.zip
+
+# Extraer contenido directamente a la carpeta .node-red
+echo -e "${GREEN}Extrayendo archivos del proyecto...${NC}"
+apt install -y unzip
+unzip -o produccionMinimo.zip
+cp -f produccionMinimo-main/flows.json /home/$KIOSK_USER/.node-red/
+cp -f produccionMinimo-main/flows_cred.json /home/$KIOSK_USER/.node-red/ 2>/dev/null
+cp -f produccionMinimo-main/.* /home/$KIOSK_USER/.node-red/ 2>/dev/null
+rm -rf produccionMinimo.zip produccionMinimo-main
+
+# Configurar permisos
+chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
+
+# Instalar dependencias
+echo -e "${GREEN}Instalando dependencias del proyecto...${NC}"
+su - $KIOSK_USER -c "cd ~/.node-red && source ~/.nvm/nvm.sh && npm install --unsafe-perm"
+
+# Instalar módulos adicionales explícitamente
+echo -e "${GREEN}Instalando módulos adicionales...${NC}"
+su - $KIOSK_USER -c "cd ~/.node-red && source ~/.nvm/nvm.sh && npm install --unsafe-perm @flowfuse/node-red-dashboard@1.16.0 node-red-dashboard@3.6.5 node-red-contrib-influxdb@0.7.0 node-red-contrib-modbus@5.31.0 node-red-contrib-stackhero-influxdb-v2@1.0.4 node-red-node-serialport@2.0.2"
 
 # Crear servicio systemd para Node-RED con variables de entorno explícitas
 cat > /etc/systemd/system/nodered.service << EOF
@@ -124,8 +193,8 @@ KillSignal=SIGINT
 WantedBy=multi-user.target
 EOF
 
-# Paso 5: Configurar conectividad y entorno
-echo -e "${GREEN}[5/7] Configurando conectividad y entorno de red...${NC}"
+# Paso 6: Configurar conectividad y entorno
+echo -e "${GREEN}[6/7] Configurando conectividad y entorno de red...${NC}"
 
 # Configurar IP estática
 echo -e "${GREEN}Configurando IP estática $STATIC_IP...${NC}"
@@ -193,100 +262,17 @@ chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --di
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
-# Configurar atajo de teclado en OpenBox para cambiar entre vistas
-cat > /home/$KIOSK_USER/.config/openbox/rc.xml << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
-  <resistance>
-    <strength>10</strength>
-    <screen_edge_strength>20</screen_edge_strength>
-  </resistance>
-  <focus>
-    <focusNew>yes</focusNew>
-    <followMouse>no</followMouse>
-    <focusLast>yes</focusLast>
-    <underMouse>no</underMouse>
-    <focusDelay>200</focusDelay>
-    <raiseOnFocus>no</raiseOnFocus>
-  </focus>
-  <placement>
-    <policy>Smart</policy>
-    <center>yes</center>
-    <monitor>Primary</monitor>
-    <primaryMonitor>1</primaryMonitor>
-  </placement>
-  <theme>
-    <name>Clearlooks</name>
-    <titleLayout>NLIMC</titleLayout>
-    <keepBorder>yes</keepBorder>
-    <animateIconify>yes</animateIconify>
-  </theme>
-  <desktops>
-    <number>1</number>
-    <firstdesk>1</firstdesk>
-    <names>
-      <name>Desktop 1</name>
-    </names>
-    <popupTime>875</popupTime>
-  </desktops>
-  <resize>
-    <drawContents>yes</drawContents>
-    <popupShow>Nonpixel</popupShow>
-    <popupPosition>Center</popupPosition>
-    <popupFixedPosition>
-      <x>10</x>
-      <y>10</y>
-    </popupFixedPosition>
-  </resize>
-  <margins>
-    <top>0</top>
-    <bottom>0</bottom>
-    <left>0</left>
-    <right>0</right>
-  </margins>
-  <keyboard>
-    <!-- Atajo para cambiar entre vistas (Ctrl+Alt+D) -->
-    <keybind key="C-A-d">
-      <action name="Execute">
-        <command>sudo /home/$KIOSK_USER/toggle-view.sh</command>
-      </action>
-    </keybind>
-    
-    <!-- Atajo para cerrar la ventana activa (Alt+F4) -->
-    <keybind key="A-F4">
-      <action name="Close"/>
-    </keybind>
-  </keyboard>
-  <mouse>
-    <dragThreshold>1</dragThreshold>
-    <doubleClickTime>500</doubleClickTime>
-    <screenEdgeWarpTime>400</screenEdgeWarpTime>
-    <screenEdgeWarpMouse>false</screenEdgeWarpMouse>
-    <context name="Frame">
-      <mousebind button="A-Left" action="Drag">
-        <action name="Move"/>
-      </mousebind>
-      <mousebind button="A-Right" action="Drag">
-        <action name="Resize"/>
-      </mousebind>
-    </context>
-    <context name="Titlebar">
-      <mousebind button="Left" action="Press">
-        <action name="Focus"/>
-        <action name="Raise"/>
-      </mousebind>
-      <mousebind button="Left" action="Click">
-        <action name="Focus"/>
-        <action name="Raise"/>
-      </mousebind>
-      <mousebind button="Left" action="DoubleClick">
-        <action name="ToggleMaximizeFull"/>
-      </mousebind>
-    </context>
-  </mouse>
-</openbox_config>
+# Configurar atajo de teclado con xbindkeys para mayor compatibilidad
+apt install -y xbindkeys xdotool
+cat > /home/$KIOSK_USER/.xbindkeysrc << EOF
+# Cambiar entre vistas con Ctrl+Alt+D
+"sudo /home/$KIOSK_USER/toggle-view.sh"
+    Control+Alt + d
 EOF
-chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config/openbox/rc.xml
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.xbindkeysrc
+
+# Actualizar autostart para incluir xbindkeys
+sed -i '/unclutter/a # Iniciar xbindkeys para manejar atajos de teclado\nxbindkeys &\n' /home/$KIOSK_USER/.config/openbox/autostart
 
 # Configurar servicio de kiosko
 cat > /etc/systemd/system/kiosk.service << EOF
@@ -316,73 +302,8 @@ Section "ServerFlags"
 EndSection
 EOF
 
-# Paso 6: Crear scripts de utilidades
-echo -e "${GREEN}[6/7] Creando scripts de utilidades...${NC}"
-
-# Script para configurar el proyecto
-cat > /home/$KIOSK_USER/setup-project.sh << EOF
-#!/bin/bash
-# setup-project.sh - Script para configurar el proyecto en Node-RED
-
-# Variables
-NODERED_REPO="https://github.com/asproit/produccionMinimo.git"
-
-# Configurar colores para mensajes
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-echo -e "\${BLUE}==========================================================\${NC}"
-echo -e "\${BLUE}  CONFIGURACIÓN DEL PROYECTO NODE-RED\${NC}"
-echo -e "\${BLUE}==========================================================\${NC}"
-echo ""
-
-# Detener Node-RED
-sudo systemctl stop nodered.service
-echo -e "\${GREEN}1. Node-RED detenido\${NC}"
-
-# Realizar un backup si hay archivos existentes
-BACKUP_DIR="\$HOME/node-red-backup-\$(date +%Y%m%d%H%M%S)"
-if [ -f "\$HOME/.node-red/flows.json" ]; then
-    mkdir -p \$BACKUP_DIR
-    cp -r \$HOME/.node-red/* \$BACKUP_DIR/ 2>/dev/null
-    echo -e "\${GREEN}2. Backup creado en \$BACKUP_DIR\${NC}"
-fi
-
-# Limpiar directorio de Node-RED
-rm -rf \$HOME/.node-red/*
-echo -e "\${GREEN}3. Directorio de Node-RED limpiado\${NC}"
-
-# Clonar el repositorio
-cd \$HOME/.node-red
-git clone \$NODERED_REPO .
-echo -e "\${GREEN}4. Repositorio clonado\${NC}"
-
-# Instalar dependencias del proyecto
-source \$HOME/.nvm/nvm.sh
-npm install --unsafe-perm
-echo -e "\${GREEN}5. Dependencias del proyecto instaladas\${NC}"
-
-# Instalar módulos de dashboard específicos
-npm install --unsafe-perm @flowfuse/node-red-dashboard node-red-dashboard node-red-contrib-influxdb node-red-contrib-modbus node-red-contrib-stackhero-influxdb-v2 node-red-node-serialport
-echo -e "\${GREEN}6. Módulos adicionales instalados\${NC}"
-
-# Reiniciar Node-RED
-sudo systemctl start nodered.service
-echo -e "\${GREEN}7. Node-RED reiniciado\${NC}"
-
-echo -e "\${BLUE}==========================================================\${NC}"
-echo -e "\${GREEN}¡CONFIGURACIÓN DEL PROYECTO COMPLETADA!\${NC}"
-echo -e "\${BLUE}==========================================================\${NC}"
-echo ""
-echo "Node-RED está disponible en: http://localhost:1880"
-echo "Desde otras máquinas en la red: http://$STATIC_IP:1880"
-echo "Si el proyecto se cargó correctamente, los flujos deberían estar disponibles."
-echo ""
-EOF
-chmod +x /home/$KIOSK_USER/setup-project.sh
-chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/setup-project.sh
+# Paso 7: Crear scripts de utilidades
+echo -e "${GREEN}[7/7] Creando scripts de utilidades...${NC}"
 
 # Script para cambiar entre vistas
 cat > /home/$KIOSK_USER/toggle-view.sh << EOF
@@ -394,22 +315,35 @@ AUTOSTART="/home/$KIOSK_USER/.config/openbox/autostart"
 EDITOR_URL="http://localhost:1880"
 DASHBOARD_URL="http://localhost:1880/dashboard"
 
+# Asegurar que estamos ejecutando como root
+if [ "\$(id -u)" != "0" ]; then
+   echo "Este script debe ejecutarse como root"
+   exit 1
+fi
+
 # Determinar qué URL está actualmente configurada
 CURRENT_URL=\$(grep "chromium.*http" \$AUTOSTART | sed -E 's/.*chromium .* (http[^ ]+).*/\1/')
+
+echo "URL actual: \$CURRENT_URL"
 
 # Cambiar a la otra URL
 if [ "\$CURRENT_URL" = "\$EDITOR_URL" ]; then
   # Cambiar a dashboard
   sed -i "s|\$EDITOR_URL|\$DASHBOARD_URL|g" \$AUTOSTART
   echo "Cambiado a vista de Dashboard"
+  # Reiniciar chromium directamente
+  pkill chromium
+  sleep 2
+  su - $KIOSK_USER -c "DISPLAY=:0 chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 \$DASHBOARD_URL &"
 else
   # Cambiar a editor
   sed -i "s|\$DASHBOARD_URL|\$EDITOR_URL|g" \$AUTOSTART
   echo "Cambiado a vista de Editor"
+  # Reiniciar chromium directamente
+  pkill chromium
+  sleep 2
+  su - $KIOSK_USER -c "DISPLAY=:0 chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 \$EDITOR_URL &"
 fi
-
-# Reiniciar el servicio de kiosko
-systemctl restart kiosk.service
 EOF
 chmod +x /home/$KIOSK_USER/toggle-view.sh
 chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/toggle-view.sh
@@ -452,30 +386,34 @@ EOF
 chmod +x /home/$KIOSK_USER/check-modbus.sh
 chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/check-modbus.sh
 
-# Paso 7: Activar servicios
-echo -e "${GREEN}[7/7] Activando servicios...${NC}"
+# Activar servicios
 systemctl daemon-reload
 systemctl enable nodered.service
 systemctl enable kiosk.service
 systemctl enable networking
 
+# Iniciar servicios
+systemctl start nodered.service
+
 echo -e "${BLUE}===========================================================${NC}"
-echo -e "${GREEN}¡INSTALACIÓN DEL SISTEMA BASE COMPLETADA!${NC}"
+echo -e "${GREEN}¡INSTALACIÓN COMPLETA DEL SISTEMA TERMINADA!${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
 echo "Configuración de red:"
 echo "- IP estática: $STATIC_IP"
 echo "- Puerto Node-RED: $NODE_RED_PORT"
 echo ""
+echo "Accesos:"
+echo "- Node-RED local: http://localhost:1880"
+echo "- Node-RED en red: http://$STATIC_IP:1880"
+echo "- Dashboard: http://localhost:1880/dashboard"
+echo ""
 echo "Scripts disponibles:"
-echo "- setup-project.sh: Configura el proyecto Node-RED"
 echo "- toggle-view.sh: Cambia entre vistas (editor/dashboard)"
 echo "- check-modbus.sh: Verifica la conectividad con dispositivos Modbus"
 echo ""
-echo "Acceso:"
-echo "- Local: http://localhost:1880"
-echo "- Red: http://$STATIC_IP:1880"
-echo "- Atajo para cambiar vistas: Ctrl+Alt+D"
+echo "Atajos de teclado:"
+echo "- Ctrl+Alt+D: Cambia entre vistas de editor y dashboard"
 echo ""
 echo "Usuario: $KIOSK_USER"
 echo ""
@@ -484,12 +422,7 @@ echo "- Para reiniciar: sudo reboot"
 echo "- Para apagar: sudo shutdown -h now"
 echo ""
 
-read -p "¿Deseas ejecutar ahora el script de configuración del proyecto? (s/n): " configurar
-if [ "$configurar" = "s" ] || [ "$configurar" = "S" ]; then
-    sudo -u $KIOSK_USER /home/$KIOSK_USER/setup-project.sh
-    echo ""
-    read -p "¿Deseas reiniciar ahora para aplicar todos los cambios? (s/n): " reiniciar
-    if [ "$reiniciar" = "s" ] || [ "$reiniciar" = "S" ]; then
-        reboot
-    fi
+read -p "¿Deseas reiniciar ahora para aplicar todos los cambios? (s/n): " reiniciar
+if [ "$reiniciar" = "s" ] || [ "$reiniciar" = "S" ]; then
+    reboot
 fi
