@@ -11,7 +11,8 @@ fi
 KIOSK_USER="kiosk"
 KIOSK_PASSWORD="monitor123"  # Cambia esto por seguridad
 NODE_RED_PORT=1880
-DASHBOARD_URL="http://localhost:$NODE_RED_PORT/dashboard"
+INITIAL_URL="http://localhost:$NODE_RED_PORT"  # Interfaz principal de Node-RED
+DASHBOARD_URL="http://localhost:$NODE_RED_PORT/dashboard"  # Para referencia futura
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
 NODERED_REPO="https://github.com/asproit/produccionMinimo.git"
 
@@ -62,16 +63,45 @@ su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && nvm install --lts && nvm use --lts 
 
 # Obtener la versión exacta y rutas de Node.js
 NODE_VERSION=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && node -v")
-NODE_VERSION_CLEAN=${NODE_VERSION#v}  # Quitar la 'v' inicial
-NODE_PATH="/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/bin/node"
-echo -e "${BLUE}Node.js instalado: $NODE_PATH (versión $NODE_VERSION)${NC}"
+echo -e "${BLUE}Versión de Node.js instalada: $NODE_VERSION${NC}"
+
+# Determinar si el directorio tiene el prefijo 'v' o no
+if su - $KIOSK_USER -c "test -d ~/.nvm/versions/node/${NODE_VERSION}"; then
+    NODE_DIR="/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION}"
+    echo -e "${GREEN}Directorio de Node.js (con 'v'): $NODE_DIR${NC}"
+elif su - $KIOSK_USER -c "test -d ~/.nvm/versions/node/${NODE_VERSION#v}"; then
+    NODE_DIR="/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}"
+    echo -e "${GREEN}Directorio de Node.js (sin 'v'): $NODE_DIR${NC}"
+else
+    echo -e "${RED}No se pudo determinar el directorio de Node.js. Creando enlace simbólico para mayor compatibilidad${NC}"
+    # Crear enlace simbólico para ambas variantes para aumentar compatibilidad
+    if su - $KIOSK_USER -c "test -d ~/.nvm/versions/node/${NODE_VERSION}"; then
+        mkdir -p /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}
+        ln -sf /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION}/bin /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin
+        NODE_DIR="/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION}"
+    elif su - $KIOSK_USER -c "test -d ~/.nvm/versions/node/${NODE_VERSION#v}"; then
+        mkdir -p /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION}
+        ln -sf /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION}/bin
+        NODE_DIR="/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}"
+    else
+        echo -e "${RED}Error crítico: No se pudo encontrar o crear directorios de Node.js${NC}"
+        exit 1
+    fi
+fi
+
+NODE_PATH="$NODE_DIR/bin/node"
+echo -e "${BLUE}Node.js ejecutable: $NODE_PATH${NC}"
 
 # Paso 4: Instalar Node-RED y configurar como servicio
 echo -e "${GREEN}[4/8] Instalando Node-RED...${NC}"
 su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && npm install -g --unsafe-perm node-red"
-# Obtener la ruta exacta de Node-RED
-NODERED_PATH="/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/bin/node-red"
-echo -e "${BLUE}Node-RED instalado: $NODERED_PATH${NC}"
+# Verificar instalación de Node-RED
+NODERED_PATH="$NODE_DIR/bin/node-red"
+if [ ! -f "$NODERED_PATH" ]; then
+    echo -e "${RED}No se encontró el ejecutable de Node-RED en la ubicación esperada.${NC}"
+    NODERED_PATH=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && which node-red")
+    echo -e "${GREEN}Usando ruta alternativa de Node-RED: $NODERED_PATH${NC}"
+fi
 
 # Habilitar projects en Node-RED
 mkdir -p /home/$KIOSK_USER/.node-red
@@ -90,7 +120,7 @@ module.exports = {
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
 
-# Crear servicio systemd para Node-RED con rutas absolutas
+# Crear servicio systemd para Node-RED con rutas absolutas verificadas
 cat > /etc/systemd/system/nodered.service << EOF
 [Unit]
 Description=Node-RED
@@ -100,8 +130,8 @@ After=network.target
 Type=simple
 User=$KIOSK_USER
 WorkingDirectory=/home/$KIOSK_USER
-Environment="PATH=/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="NODE_PATH=/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/lib/node_modules"
+Environment="PATH=$NODE_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="NODE_PATH=$NODE_DIR/lib/node_modules"
 ExecStart=$NODE_PATH $NODERED_PATH
 Restart=on-failure
 RestartSec=10
@@ -141,9 +171,18 @@ cat > /home/$KIOSK_USER/.node-red/projects/.config/project-registry.json << EOF
 }
 EOF
 
-# Instalar dependencias del proyecto
+# Instalar dependencias del proyecto - Asegurar instalación de dashboard
 echo -e "${GREEN}Instalando dependencias del proyecto...${NC}"
-su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && cd ~/.node-red && npm install @flowfuse/node-red-dashboard@1.16.0 node-red-contrib-influxdb@0.7.0 node-red-contrib-modbus@5.31.0 node-red-contrib-stackhero-influxdb-v2@1.0.4 node-red-dashboard@3.6.5 node-red-node-serialport@2.0.2"
+su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && cd ~/.node-red && npm install --unsafe-perm @flowfuse/node-red-dashboard@1.16.0 node-red-contrib-influxdb@0.7.0 node-red-contrib-modbus@5.31.0 node-red-contrib-stackhero-influxdb-v2@1.0.4 node-red-dashboard@3.6.5 node-red-node-serialport@2.0.2"
+
+# Verificar la instalación de los módulos de dashboard
+if su - $KIOSK_USER -c "cd ~/.node-red && npm list | grep -q 'node-red-dashboard'"; then
+    echo -e "${GREEN}Módulo dashboard instalado correctamente${NC}"
+else
+    echo -e "${RED}Error al instalar el módulo dashboard. Reintentando...${NC}"
+    su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && cd ~/.node-red && npm install --unsafe-perm node-red-dashboard@3.6.5"
+fi
+
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
 
 # Paso 6: Instalar Tailscale
@@ -170,7 +209,7 @@ autologin-user-timeout=0
 user-session=openbox
 EOF
 
-# Configurar Openbox para iniciar Chromium en modo kiosko
+# Configurar Openbox para iniciar Chromium en modo kiosko - Usar la interfaz principal inicialmente
 mkdir -p /home/$KIOSK_USER/.config/openbox
 cat > /home/$KIOSK_USER/.config/openbox/autostart << EOF
 # Deshabilitar gestión de energía y salvapantallas
@@ -184,8 +223,8 @@ unclutter -idle 0.1 -root &
 # Esperar un momento para que Node-RED inicie completamente
 sleep 30
 
-# Iniciar Chromium en modo kiosko completo
-chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 $DASHBOARD_URL &
+# Iniciar Chromium en modo kiosko completo - Apuntando a la interfaz principal de Node-RED
+chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 $INITIAL_URL &
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
@@ -228,16 +267,68 @@ NODERED_STATUS=$(systemctl is-active nodered.service)
 if [ "$NODERED_STATUS" = "active" ]; then
     echo -e "${GREEN}Servicio Node-RED iniciado correctamente.${NC}"
 else
-    echo -e "${RED}Advertencia: El servicio Node-RED no pudo iniciarse. Comprobando logs...${NC}"
-    journalctl -u nodered.service -n 20
+    echo -e "${RED}Advertencia: El servicio Node-RED no pudo iniciarse. Intentando solucionar...${NC}"
+    # Intento de solución automática
+    echo -e "${BLUE}Creando enlaces simbólicos para asegurar compatibilidad de rutas...${NC}"
+    
+    # Crear enlaces simbólicos entre las versiones con y sin 'v'
+    if [ -d "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}" ] && [ ! -d "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}" ]; then
+        mkdir -p "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin"
+        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node" "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node"
+        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node-red" "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node-red"
+        chown -R $KIOSK_USER:$KIOSK_USER "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}"
+    elif [ -d "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}" ] && [ ! -d "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}" ]; then
+        mkdir -p "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin"
+        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node" "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node"
+        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node-red" "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node-red"
+        chown -R $KIOSK_USER:$KIOSK_USER "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}"
+    fi
+    
+    systemctl restart nodered.service
+    sleep 5
+    NODERED_STATUS=$(systemctl is-active nodered.service)
+    if [ "$NODERED_STATUS" = "active" ]; then
+        echo -e "${GREEN}¡Éxito! El servicio Node-RED ahora está funcionando correctamente.${NC}"
+    else
+        echo -e "${RED}Problemas persistentes con Node-RED. Por favor, verifica los logs:${NC}"
+        journalctl -u nodered.service -n 20
+    fi
 fi
+
+# Crear un archivo README para instrucciones sobre cómo configurar el dashboard
+mkdir -p /home/$KIOSK_USER/Desktop
+cat > /home/$KIOSK_USER/Desktop/README.txt << EOF
+SISTEMA DE MONITOREO MINIMALISTA
+================================
+
+Información importante:
+- Node-RED está accesible en: $INITIAL_URL
+- Para acceder al dashboard (una vez configurado): $DASHBOARD_URL
+
+Configuración del Dashboard:
+1. Accede a Node-RED y configura los flujos con widgets de dashboard
+2. Instala nodos adicionales si es necesario
+3. Una vez configurado, puedes modificar el archivo autostart para apuntar directamente al dashboard:
+   Edita: /home/$KIOSK_USER/.config/openbox/autostart
+   Cambia $INITIAL_URL por $DASHBOARD_URL en la línea de Chromium
+
+Reinicio o Apagado:
+- Para reiniciar: sudo reboot
+- Para apagar: sudo shutdown -h now
+
+Rutas importantes:
+- Node.js: $NODE_PATH
+- Node-RED: $NODERED_PATH
+- Proyectos Node-RED: /home/$KIOSK_USER/.node-red/projects
+EOF
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/Desktop/README.txt
 
 echo -e "${BLUE}===========================================================${NC}"
 echo -e "${GREEN}¡INSTALACIÓN COMPLETADA!${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
-echo "Node-RED con proyecto 'produccionMinimo' y dependencias instaladas: http://localhost:$NODE_RED_PORT"
-echo "Dashboard: $DASHBOARD_URL"
+echo "Node-RED con proyecto 'produccionMinimo' y dependencias instaladas: $INITIAL_URL"
+echo "Dashboard (cuando esté configurado): $DASHBOARD_URL"
 echo "Tailscale instalado para acceso remoto"
 echo "Kiosko configurado para arranque automático"
 echo ""
@@ -245,7 +336,9 @@ echo "Usuario kiosko: $KIOSK_USER"
 echo "Contraseña: $KIOSK_PASSWORD"
 echo ""
 echo -e "${BLUE}Información importante:${NC}"
+echo "- Accede a Node-RED para configurar el dashboard"
 echo "- Puedes acceder a Node-RED remotamente vía Tailscale"
+echo "- Se ha creado un archivo README en el escritorio con instrucciones"
 echo "- Para reiniciar: sudo reboot"
 echo "- Para apagar: sudo shutdown -h now"
 echo ""
