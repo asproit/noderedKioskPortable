@@ -1,5 +1,5 @@
 #!/bin/bash
-# install-monitor-system.sh - Script para instalar sistema de monitoreo minimalista
+# install-system.sh - Script para instalar sistema base de monitoreo
 
 # Verificar ejecución como root
 if [ "$(id -u)" != "0" ]; then
@@ -11,10 +11,8 @@ fi
 KIOSK_USER="kiosk"
 KIOSK_PASSWORD="monitor123"  # Cambia esto por seguridad
 NODE_RED_PORT=1880
-INITIAL_URL="http://localhost:$NODE_RED_PORT"  # Interfaz principal de Node-RED
-DASHBOARD_URL="http://localhost:$NODE_RED_PORT/dashboard"  # Para referencia futura
+INITIAL_URL="http://localhost:$NODE_RED_PORT"
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
-NODERED_REPO="https://github.com/asproit/produccionMinimo.git"
 
 # Configurar colores para mensajes
 GREEN='\033[0;32m'
@@ -23,17 +21,17 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}===========================================================${NC}"
-echo -e "${BLUE}  INSTALACIÓN DE SISTEMA DE MONITOREO MINIMALISTA${NC}"
+echo -e "${BLUE}  INSTALACIÓN DEL SISTEMA BASE DE MONITOREO${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
 
 # Paso 1: Actualizar sistema e instalar dependencias básicas
-echo -e "${GREEN}[1/8] Actualizando sistema e instalando dependencias básicas...${NC}"
+echo -e "${GREEN}[1/6] Actualizando sistema e instalando dependencias básicas...${NC}"
 apt update && apt upgrade -y
 apt install -y git curl wget nano sudo openssh-server htop net-tools
 
 # Paso 2: Crear usuario para el kiosko
-echo -e "${GREEN}[2/8] Configurando usuario kiosko...${NC}"
+echo -e "${GREEN}[2/6] Configurando usuario kiosko...${NC}"
 if ! id "$KIOSK_USER" &>/dev/null; then
     adduser --gecos "" --disabled-password $KIOSK_USER
     echo "$KIOSK_USER:$KIOSK_PASSWORD" | chpasswd
@@ -45,8 +43,8 @@ fi
 # Añadir al grupo video para X server
 usermod -aG video $KIOSK_USER
 
-# Paso 3: Instalar Node.js usando NVM (más flexible para actualizaciones)
-echo -e "${GREEN}[3/8] Instalando Node.js vía NVM...${NC}"
+# Paso 3: Instalar Node.js usando NVM
+echo -e "${GREEN}[3/6] Instalando Node.js vía NVM...${NC}"
 su - $KIOSK_USER -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash"
 # Configurar .bashrc para cargar NVM automáticamente
 cat >> /home/$KIOSK_USER/.bashrc << EOF
@@ -74,7 +72,7 @@ elif su - $KIOSK_USER -c "test -d ~/.nvm/versions/node/${NODE_VERSION#v}"; then
     echo -e "${GREEN}Directorio de Node.js (sin 'v'): $NODE_DIR${NC}"
 else
     echo -e "${RED}No se pudo determinar el directorio de Node.js. Creando enlace simbólico para mayor compatibilidad${NC}"
-    # Crear enlace simbólico para ambas variantes para aumentar compatibilidad
+    # Crear enlace simbólico para ambas variantes
     if su - $KIOSK_USER -c "test -d ~/.nvm/versions/node/${NODE_VERSION}"; then
         mkdir -p /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}
         ln -sf /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION}/bin /home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin
@@ -92,13 +90,9 @@ fi
 NODE_PATH="$NODE_DIR/bin/node"
 echo -e "${BLUE}Node.js ejecutable: $NODE_PATH${NC}"
 
-# Paso 4: Clonar repositorio y configurar Node-RED
-echo -e "${GREEN}[4/8] Clonando repositorio y configurando Node-RED...${NC}"
-
-# Instalar Node-RED globalmente
+# Paso 4: Instalar Node-RED
+echo -e "${GREEN}[4/6] Instalando Node-RED...${NC}"
 su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && npm install -g --unsafe-perm node-red"
-
-# Verificar instalación de Node-RED
 NODERED_PATH="$NODE_DIR/bin/node-red"
 if [ ! -f "$NODERED_PATH" ]; then
     echo -e "${RED}No se encontró el ejecutable de Node-RED en la ubicación esperada.${NC}"
@@ -106,40 +100,8 @@ if [ ! -f "$NODERED_PATH" ]; then
     echo -e "${GREEN}Usando ruta alternativa de Node-RED: $NODERED_PATH${NC}"
 fi
 
-# Crear directorio para Node-RED y eliminar cualquier contenido existente
+# Crear carpeta .node-red inicial
 mkdir -p /home/$KIOSK_USER/.node-red
-rm -rf /home/$KIOSK_USER/.node-red/*
-
-# Clonar el repositorio directamente en la carpeta de Node-RED
-echo -e "${GREEN}Clonando repositorio de Node-RED...${NC}"
-su - $KIOSK_USER -c "cd ~/.node-red && git clone $NODERED_REPO ."
-
-# Configurar settings.js específico
-cat > /home/$KIOSK_USER/.node-red/settings.js << EOF
-module.exports = {
-    // Puerto de Node-RED
-    uiPort: $NODE_RED_PORT,
-    
-    // Usar los archivos de flujo del repositorio
-    flowFile: 'flows.json',
-    credentialsFile: 'flows_cred.json',
-    
-    // Otras configuraciones opcionales
-    adminAuth: null,
-    
-    // Ruta a la carpeta de nodos de usuario
-    userDir: '/home/$KIOSK_USER/.node-red'
-}
-EOF
-
-# Instalar dependencias del proyecto desde package.json
-echo -e "${GREEN}Instalando dependencias del proyecto...${NC}"
-su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && cd ~/.node-red && npm install --unsafe-perm"
-
-# Instalar módulos de dashboard específicos si no están en package.json
-echo -e "${GREEN}Asegurando instalación de módulos de dashboard...${NC}"
-su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && cd ~/.node-red && npm install --unsafe-perm @flowfuse/node-red-dashboard node-red-dashboard"
-
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
 
 # Crear servicio systemd para Node-RED con rutas absolutas verificadas
@@ -163,8 +125,8 @@ KillSignal=SIGINT
 WantedBy=multi-user.target
 EOF
 
-# Paso 5: Instalar Tailscale
-echo -e "${GREEN}[5/8] Instalando Tailscale...${NC}"
+# Paso 5: Instalar Tailscale y configurar entorno
+echo -e "${GREEN}[5/6] Instalando Tailscale...${NC}"
 curl -fsSL https://tailscale.com/install.sh | sh
 
 # Configurar Tailscale para permitir tráfico al puerto 1880
@@ -175,8 +137,8 @@ else
     echo "Para permitir acceso al puerto de Node-RED: tailscale up --authkey=TU-CLAVE-AQUÍ --advertise-routes=localhost/$NODE_RED_PORT --shields-up"
 fi
 
-# Paso 6: Instalar entorno para kiosko (X, openbox, chromium)
-echo -e "${GREEN}[6/8] Instalando entorno para kiosko...${NC}"
+# Instalar entorno para kiosko
+echo -e "${GREEN}Instalando entorno para kiosko...${NC}"
 apt install -y xorg openbox lightdm chromium x11-xserver-utils unclutter
 
 # Configurar LightDM para autologin
@@ -187,7 +149,7 @@ autologin-user-timeout=0
 user-session=openbox
 EOF
 
-# Configurar Openbox para iniciar Chromium en modo kiosko - Usar la interfaz principal inicialmente
+# Configurar Openbox para iniciar Chromium en modo kiosko
 mkdir -p /home/$KIOSK_USER/.config/openbox
 cat > /home/$KIOSK_USER/.config/openbox/autostart << EOF
 # Deshabilitar gestión de energía y salvapantallas
@@ -201,12 +163,12 @@ unclutter -idle 0.1 -root &
 # Esperar un momento para que Node-RED inicie completamente
 sleep 30
 
-# Iniciar Chromium en modo kiosko completo - Apuntando a la interfaz principal de Node-RED
+# Iniciar Chromium en modo kiosko completo
 chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 $INITIAL_URL &
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
-# Configurar servicio de kiosko con enfoque más robusto
+# Configurar servicio de kiosko
 cat > /etc/systemd/system/kiosk.service << EOF
 [Unit]
 Description=Kiosk Mode Service
@@ -233,101 +195,111 @@ Section "ServerFlags"
 EndSection
 EOF
 
-# Paso 7: Activar servicios y últimos ajustes
-echo -e "${GREEN}[7/8] Activando servicios...${NC}"
+# Paso 6: Activar servicios
+echo -e "${GREEN}[6/6] Activando servicios...${NC}"
 systemctl daemon-reload
 systemctl enable nodered.service
 systemctl enable kiosk.service
-systemctl start nodered.service
 
-# Verificar que el servicio Node-RED esté funcionando
-NODERED_STATUS=$(systemctl is-active nodered.service)
-if [ "$NODERED_STATUS" = "active" ]; then
-    echo -e "${GREEN}Servicio Node-RED iniciado correctamente.${NC}"
-else
-    echo -e "${RED}Advertencia: El servicio Node-RED no pudo iniciarse. Intentando solucionar...${NC}"
-    # Intento de solución automática
-    echo -e "${BLUE}Creando enlaces simbólicos para asegurar compatibilidad de rutas...${NC}"
+# Crear script para configurar el proyecto
+cat > /home/$KIOSK_USER/setup-project.sh << EOF
+#!/bin/bash
+# Script para configurar el proyecto Node-RED
+
+# Variables
+NODERED_REPO="https://github.com/asproit/produccionMinimo.git"
+NODE_RED_PORT=1880
+DASHBOARD_URL="http://localhost:\$NODE_RED_PORT/dashboard"
+
+# Configurar colores para mensajes
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+
+echo -e "\${BLUE}==========================================================\${NC}"
+echo -e "\${BLUE}  CONFIGURACIÓN DEL PROYECTO NODE-RED\${NC}"
+echo -e "\${BLUE}==========================================================\${NC}"
+echo ""
+
+# Detener Node-RED
+sudo systemctl stop nodered.service
+echo -e "\${GREEN}1. Node-RED detenido\${NC}"
+
+# Limpiar carpeta .node-red
+rm -rf ~/.node-red/*
+echo -e "\${GREEN}2. Carpeta .node-red limpiada\${NC}"
+
+# Clonar el repositorio
+cd ~/.node-red
+git clone \$NODERED_REPO .
+echo -e "\${GREEN}3. Repositorio clonado\${NC}"
+
+# Configurar settings.js
+cat > ~/.node-red/settings.js << SETTINGSEOF
+module.exports = {
+    // Puerto de Node-RED
+    uiPort: \$NODE_RED_PORT,
     
-    # Crear enlaces simbólicos entre las versiones con y sin 'v'
-    if [ -d "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}" ] && [ ! -d "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}" ]; then
-        mkdir -p "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin"
-        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node" "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node"
-        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node-red" "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node-red"
-        chown -R $KIOSK_USER:$KIOSK_USER "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}"
-    elif [ -d "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}" ] && [ ! -d "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}" ]; then
-        mkdir -p "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin"
-        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node" "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node"
-        ln -sf "/home/$KIOSK_USER/.nvm/versions/node/${NODE_VERSION#v}/bin/node-red" "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}/bin/node-red"
-        chown -R $KIOSK_USER:$KIOSK_USER "/home/$KIOSK_USER/.nvm/versions/node/v${NODE_VERSION#v}"
-    fi
+    // Usar los archivos de flujo del repositorio
+    flowFile: 'flows.json',
+    credentialsFile: 'flows_cred.json',
     
-    systemctl restart nodered.service
-    sleep 5
-    NODERED_STATUS=$(systemctl is-active nodered.service)
-    if [ "$NODERED_STATUS" = "active" ]; then
-        echo -e "${GREEN}¡Éxito! El servicio Node-RED ahora está funcionando correctamente.${NC}"
-    else
-        echo -e "${RED}Problemas persistentes con Node-RED. Por favor, verifica los logs:${NC}"
-        journalctl -u nodered.service -n 20
-    fi
-fi
+    // Otras configuraciones opcionales
+    adminAuth: null,
+    
+    // Ruta a la carpeta de nodos de usuario
+    userDir: '$HOME/.node-red'
+}
+SETTINGSEOF
+echo -e "\${GREEN}4. Archivo settings.js configurado\${NC}"
 
-# Paso 8: Crear archivo README con instrucciones
-echo -e "${GREEN}[8/8] Creando documentación...${NC}"
-mkdir -p /home/$KIOSK_USER/Desktop
-cat > /home/$KIOSK_USER/Desktop/README.txt << EOF
-SISTEMA DE MONITOREO MINIMALISTA
-================================
+# Instalar dependencias
+source ~/.nvm/nvm.sh
+cd ~/.node-red
+npm install --unsafe-perm
+echo -e "\${GREEN}5. Dependencias instaladas desde package.json\${NC}"
 
-Información importante:
-- Node-RED está accesible en: $INITIAL_URL
-- Para acceder al dashboard (una vez configurado): $DASHBOARD_URL
+# Instalar módulos adicionales si son necesarios
+npm install --unsafe-perm @flowfuse/node-red-dashboard node-red-dashboard node-red-contrib-influxdb node-red-contrib-modbus
+echo -e "\${GREEN}6. Módulos adicionales instalados\${NC}"
 
-Configuración del Dashboard:
-1. Accede a Node-RED y verifica los flujos existentes
-2. Si el dashboard no está funcionando correctamente, puedes configurarlo manualmente
-3. Para cambiar el navegador para que muestre el dashboard en lugar de la interfaz principal:
-   Edita: /home/$KIOSK_USER/.config/openbox/autostart
-   Cambia $INITIAL_URL por $DASHBOARD_URL en la línea de Chromium
+# Reiniciar Node-RED
+sudo systemctl start nodered.service
+echo -e "\${GREEN}7. Node-RED reiniciado\${NC}"
 
-Reinicio o Apagado:
-- Para reiniciar: sudo reboot
-- Para apagar: sudo shutdown -h now
-
-Rutas importantes:
-- Node.js: $NODE_PATH
-- Node-RED: $NODERED_PATH
-- Carpeta Node-RED: /home/$KIOSK_USER/.node-red
+echo -e "\${BLUE}==========================================================\${NC}"
+echo -e "\${GREEN}¡CONFIGURACIÓN DE PROYECTO COMPLETADA!\${NC}"
+echo -e "\${BLUE}==========================================================\${NC}"
+echo ""
+echo "Node-RED está disponible en: http://localhost:\$NODE_RED_PORT"
+echo "Dashboard (cuando esté configurado): \$DASHBOARD_URL"
+echo ""
 EOF
-chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/Desktop/README.txt
+chmod +x /home/$KIOSK_USER/setup-project.sh
+chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/setup-project.sh
 
 echo -e "${BLUE}===========================================================${NC}"
-echo -e "${GREEN}¡INSTALACIÓN COMPLETADA!${NC}"
+echo -e "${GREEN}¡INSTALACIÓN DEL SISTEMA BASE COMPLETADA!${NC}"
 echo -e "${BLUE}===========================================================${NC}"
 echo ""
-echo "Node-RED con flujos instalados: $INITIAL_URL"
-echo "Dashboard (cuando esté configurado): $DASHBOARD_URL"
-echo "Tailscale instalado para acceso remoto"
-echo "Kiosko configurado para arranque automático"
+echo "Se ha creado el script setup-project.sh para configurar el proyecto Node-RED"
+echo "Puedes ejecutarlo con: sudo -u $KIOSK_USER /home/$KIOSK_USER/setup-project.sh"
 echo ""
 echo "Usuario kiosko: $KIOSK_USER"
 echo "Contraseña: $KIOSK_PASSWORD"
 echo ""
 echo -e "${BLUE}Información importante:${NC}"
-echo "- Accede a Node-RED para verificar los flujos y el dashboard"
-echo "- Puedes acceder a Node-RED remotamente vía Tailscale"
-echo "- Se ha creado un archivo README en el escritorio con instrucciones"
 echo "- Para reiniciar: sudo reboot"
 echo "- Para apagar: sudo shutdown -h now"
 echo ""
-echo -e "${BLUE}Rutas importantes:${NC}"
-echo "- Node.js: $NODE_PATH"
-echo "- Node-RED: $NODERED_PATH"
-echo "- Carpeta Node-RED: /home/$KIOSK_USER/.node-red"
-echo ""
 
-read -p "¿Deseas reiniciar ahora para aplicar todos los cambios? (s/n): " reiniciar
-if [ "$reiniciar" = "s" ] || [ "$reiniciar" = "S" ]; then
-    reboot
+read -p "¿Deseas ejecutar ahora el script de configuración del proyecto? (s/n): " configurar
+if [ "$configurar" = "s" ] || [ "$configurar" = "S" ]; then
+    sudo -u $KIOSK_USER /home/$KIOSK_USER/setup-project.sh
+    echo ""
+    read -p "¿Deseas reiniciar ahora para aplicar todos los cambios? (s/n): " reiniciar
+    if [ "$reiniciar" = "s" ] || [ "$reiniciar" = "S" ]; then
+        reboot
+    fi
 fi
