@@ -14,7 +14,7 @@ NODE_RED_PORT=1880
 INITIAL_URL="http://localhost:$NODE_RED_PORT"
 TAILSCALE_AUTHKEY=""  # Opcional: clave de autenticación de Tailscale
 # Variables para IP estática - MODIFICA ESTAS VARIABLES SEGÚN TU RED
-STATIC_IP="192.168.1.100"
+STATIC_IP="192.168.1.136"
 NETMASK="255.255.255.0"
 GATEWAY="192.168.1.1"
 DNS1="8.8.8.8"
@@ -258,8 +258,7 @@ unclutter -idle 0.1 -root &
 sleep 30
 
 # Iniciar Chromium en modo kiosko completo
-chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 $INITIAL_URL &
-EOF
+chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --disable-translate --no-first-run --fast --fast-start --disable-features=TranslateUI --disk-cache-dir=/dev/null --disable-pinch --overscroll-history-navigation=0 http://localhost:1880/dashboard &EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
 # Configurar atajo de teclado con xbindkeys para mayor compatibilidad
