@@ -59,13 +59,20 @@ chown $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.bashrc
 
 # Cargar NVM y instalar Node.js LTS
 su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && nvm install --lts && nvm use --lts && nvm alias default node"
-NODE_PATH=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && which node")
+
+# Obtener la versión exacta y rutas de Node.js
 NODE_VERSION=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && node -v")
+NODE_VERSION_CLEAN=${NODE_VERSION#v}  # Quitar la 'v' inicial
+NODE_PATH="/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/bin/node"
 echo -e "${BLUE}Node.js instalado: $NODE_PATH (versión $NODE_VERSION)${NC}"
 
 # Paso 4: Instalar Node-RED y configurar como servicio
 echo -e "${GREEN}[4/8] Instalando Node-RED...${NC}"
 su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && npm install -g --unsafe-perm node-red"
+# Obtener la ruta exacta de Node-RED
+NODERED_PATH="/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/bin/node-red"
+echo -e "${BLUE}Node-RED instalado: $NODERED_PATH${NC}"
+
 # Habilitar projects en Node-RED
 mkdir -p /home/$KIOSK_USER/.node-red
 cat > /home/$KIOSK_USER/.node-red/settings.js << EOF
@@ -83,8 +90,7 @@ module.exports = {
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.node-red
 
-# Crear servicio systemd para Node-RED
-NODE_RED_PATH=$(su - $KIOSK_USER -c "source ~/.nvm/nvm.sh && which node-red")
+# Crear servicio systemd para Node-RED con rutas absolutas
 cat > /etc/systemd/system/nodered.service << EOF
 [Unit]
 Description=Node-RED
@@ -94,9 +100,9 @@ After=network.target
 Type=simple
 User=$KIOSK_USER
 WorkingDirectory=/home/$KIOSK_USER
-Environment="PATH=/home/$KIOSK_USER/.nvm/versions/node/\$(ls -t /home/$KIOSK_USER/.nvm/versions/node/ | head -n 1)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="NODE_PATH=/home/$KIOSK_USER/.nvm/versions/node/\$(ls -t /home/$KIOSK_USER/.nvm/versions/node/ | head -n 1)/lib/node_modules"
-ExecStart=$NODE_PATH $NODE_RED_PATH
+Environment="PATH=/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="NODE_PATH=/home/$KIOSK_USER/.nvm/versions/node/$NODE_VERSION_CLEAN/lib/node_modules"
+ExecStart=$NODE_PATH $NODERED_PATH
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT
@@ -183,7 +189,7 @@ chromium --no-sandbox --kiosk --incognito --disable-infobars --noerrdialogs --di
 EOF
 chown -R $KIOSK_USER:$KIOSK_USER /home/$KIOSK_USER/.config
 
-# Configurar servicio de kiosko
+# Configurar servicio de kiosko con enfoque más robusto
 cat > /etc/systemd/system/kiosk.service << EOF
 [Unit]
 Description=Kiosk Mode Service
@@ -217,6 +223,15 @@ systemctl enable nodered.service
 systemctl enable kiosk.service
 systemctl start nodered.service
 
+# Verificar que el servicio Node-RED esté funcionando
+NODERED_STATUS=$(systemctl is-active nodered.service)
+if [ "$NODERED_STATUS" = "active" ]; then
+    echo -e "${GREEN}Servicio Node-RED iniciado correctamente.${NC}"
+else
+    echo -e "${RED}Advertencia: El servicio Node-RED no pudo iniciarse. Comprobando logs...${NC}"
+    journalctl -u nodered.service -n 20
+fi
+
 echo -e "${BLUE}===========================================================${NC}"
 echo -e "${GREEN}¡INSTALACIÓN COMPLETADA!${NC}"
 echo -e "${BLUE}===========================================================${NC}"
@@ -233,6 +248,11 @@ echo -e "${BLUE}Información importante:${NC}"
 echo "- Puedes acceder a Node-RED remotamente vía Tailscale"
 echo "- Para reiniciar: sudo reboot"
 echo "- Para apagar: sudo shutdown -h now"
+echo ""
+echo -e "${BLUE}Rutas importantes:${NC}"
+echo "- Node.js: $NODE_PATH"
+echo "- Node-RED: $NODERED_PATH"
+echo "- Proyectos Node-RED: /home/$KIOSK_USER/.node-red/projects"
 echo ""
 
 read -p "¿Deseas reiniciar ahora para aplicar todos los cambios? (s/n): " reiniciar
